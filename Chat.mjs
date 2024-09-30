@@ -1,7 +1,7 @@
 //./openrouter_api.txt//
 
 import fs from 'fs/promises';
-import os from 'os';
+import os, { type } from 'os';
 import path from 'path';
 import { OpenAI } from "openai";
 import { Anthropic } from '@anthropic-ai/sdk';
@@ -109,22 +109,57 @@ export function anthropicChat(clientClass) {
       }
     });
 
-    messages.push({ role: "user", content: userMessage });
+    // Prepare system content with caching if applicable
+    const system_content = system ? [{ 
+      type: "text", 
+      text: system,
+      cache_control: system_cacheable ? { type: "ephemeral" } : undefined
+    }] : undefined;
 
-    const cached_system = [{ type: "text", text: system, cache_control: { type: "ephemeral" } }];
 
-    let prompt_system = system_cacheable ? cached_system : system;
-    const params = { system: prompt_system, model, temperature, max_tokens, stream };
+    // Prepare messages
+    const cached_messages = messages.map(msg => ({
+      role: msg.role,
+      content: [{ 
+        type: "text", 
+        text: msg.content
+      }]
+    }));
+
+    // Add new user message
+    cached_messages.push({
+      role: "user",
+      content: [{
+        type: "text",
+        text: userMessage
+      }]
+    });
+
+    // Only apply cache_control to the last few messages
+    const last_few = Math.min(cached_messages.length, 3);
+    for (let i = cached_messages.length - last_few; i < cached_messages.length; i++) {
+      cached_messages[i].content[0].cache_control = { type: "ephemeral" };
+    }
+
+    const params = {
+      system: system_content,
+      model,
+      temperature,
+      max_tokens,
+      stream,
+      messages: cached_messages
+    };
 
     let result = "";
     const response = client.messages
-      .stream({ ...params, messages })
+      .stream(params)
       .on('text', (text) => {
         process.stdout.write(text);
         result += text;
       });
     await response.finalMessage();
 
+    messages.push({ role: 'user', content: userMessage });
     messages.push({ role: 'assistant', content: result });
 
     return result;
